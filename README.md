@@ -1,3 +1,21 @@
+# PostplanPro
+
+Kris's fork of [Postplan](https://www.npmjs.com/package/postplan) for a self-hosted instance.
+
+## Upgrading from upstream
+
+Postplan's source is only published to npm. The `upstream` branch holds each release unmodified, and `main` is upstream plus this fork's commits. To upgrade:
+
+```sh
+scripts/import-upstream.sh 0.0.6
+git merge upstream
+bun install
+bun run test
+bun run dev:local   # Postplan on http://localhost:3000 with in-memory Postgres and S3
+```
+
+The rest of this README is upstream's.
+
 # Postplan
 
 Postplan is a small service and CLI for publishing static HTML drafts from agents.
