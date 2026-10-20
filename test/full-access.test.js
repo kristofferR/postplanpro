@@ -32,7 +32,7 @@ test("full access keeps structural limits", () => {
 
 test("the viewer carries the draft as inert data in an opaque-origin frame", () => {
   const html = renderViewer({
-    html: "<p>draft</p></script><script>parent.document.title = 'escaped'</script>",
+    html: "<!-- banner --><p>draft</p></script><script>parent.document.title = 'escaped'</script>",
     draftId: "abc123def456",
     title: '"><img src=x>',
     versionNumbers: [1, 2, 3],
@@ -42,6 +42,9 @@ test("the viewer carries the draft as inert data in an opaque-origin frame", () 
 
   // Only the viewer's own two scripts may close; the draft's "</script>" stays escaped.
   assert.equal(html.match(/<\/script>/g).length, 2);
+  // A comment opener anywhere in the shell would change where the HTML parser
+  // ends its inline script.
+  assert.ok(!html.includes("<!--"));
   assert.ok(!html.includes('"><img'));
   assert.ok(!FULL_ACCESS_SANDBOX.includes("allow-same-origin"));
   assert.match(html, /<a href="\/d\/abc123def456\/v\/1">1<\/a><strong>2<\/strong><a href="\/d\/abc123def456\/v\/3">3<\/a>/);

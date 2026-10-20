@@ -42,7 +42,7 @@ export function renderViewer({ html, draftId, title, versionNumbers, currentVers
     * { box-sizing: border-box; }
     html, body { width: 100%; height: 100%; margin: 0; background: #000; }
     body { display: flex; min-height: 100dvh; flex-direction: column; overflow: hidden; }
-    .postplan-versions { flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px; padding: 7px 12px; background: #0d0d11; border-bottom: 1px solid #2a2a32; color: #6f7482; font: 12px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
+    .postplan-versions { flex: none; display: flex; flex-wrap: nowrap; white-space: nowrap; overflow-x: auto; scrollbar-width: thin; align-items: center; justify-content: safe center; gap: 4px; padding: 7px 12px; background: #0d0d11; border-bottom: 1px solid #2a2a32; color: #6f7482; font: 12px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
     .postplan-versions b { margin-right: 5px; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
     .postplan-versions a { color: #9aa0b4; text-decoration: none; font-weight: 700; padding: 1px 7px; }
     .postplan-versions a.latest { color: #8e91ff; font-weight: 800; }
@@ -62,6 +62,9 @@ export function renderViewer({ html, draftId, title, versionNumbers, currentVers
 function startViewer(draftId, bridgeSource) {
   const frame = document.getElementById("draft");
   const storageKey = `postplan:${draftId}`;
+  // Only the bridge injected below knows this token. A page the frame later
+  // navigates to shares its WindowProxy, so the source check alone is not enough.
+  const token = Array.from(crypto.getRandomValues(new Uint32Array(4)), (n) => n.toString(36)).join("");
   const stores = {};
   for (const area of ["local", "session"]) {
     try {
@@ -81,7 +84,7 @@ function startViewer(draftId, bridgeSource) {
 
   addEventListener("message", (event) => {
     const change = event.data?.postplanStorage;
-    if (event.source !== frame.contentWindow || !Object.hasOwn(stores, change?.area)) return;
+    if (event.source !== frame.contentWindow || change?.token !== token || !Object.hasOwn(stores, change.area)) return;
     const entries = new Map(Object.entries(read(change.area)));
     if (change.op === "clear") entries.clear();
     else if (change.op === "remove") entries.delete(String(change.key));
@@ -115,9 +118,22 @@ function startViewer(draftId, bridgeSource) {
     // Over quota or blocked: the draft starts from what the bridge saved.
   }
 
-  const state = JSON.stringify({ local: read("local"), session: read("session") }).replace(/</g, "\\u003c");
-  const doctype = html.match(/^\s*<!doctype[^>]*>/i)?.[0] ?? "";
-  frame.srcdoc = `${doctype}<script>(${bridgeSource})(${state})<\/script>${html.slice(doctype.length)}`;
+  const state = JSON.stringify({ local: read("local"), session: read("session"), token }).replace(/</g, "\\u003c");
+  // Keep leading comments and the doctype ahead of the bridge. Comment
+  // delimiters are written with \x3c and \x3e: literally, inside this inline
+  // script, they would change how the HTML parser finds its closing tag.
+  let at = 0;
+  for (;;) {
+    while (/\s/.test(html[at] ?? "")) at++;
+    const end = html.startsWith("\x3c!--", at) ? html.indexOf("--\x3e", at + 4) : -1;
+    if (end === -1) break;
+    at = end + 3;
+  }
+  const doctype = /\x3c!doctype[^>]*>/iy;
+  doctype.lastIndex = at;
+  const prolog = doctype.test(html) ? html.slice(0, doctype.lastIndex) : "";
+  frame.srcdoc = `${prolog}<script>(${bridgeSource})(${state})<\/script>${html.slice(prolog.length)}`;
+  document.querySelector(".postplan-versions strong")?.scrollIntoView({ block: "nearest", inline: "center" });
   // Dark while loading so dark drafts never flash, then white behind drafts
   // that set no background, as in a normal tab.
   frame.addEventListener("load", () => (frame.style.background = "#fff"), { once: true });
@@ -129,6 +145,7 @@ function startViewer(draftId, bridgeSource) {
 // srcdoc would restart from the snapshot taken when the shell loaded.
 function storageBridge(saved) {
   const prefix = "postplan-storage:";
+  const { token } = saved;
   let state = saved;
   try {
     if (window.name.startsWith(prefix)) state = JSON.parse(window.name.slice(prefix.length));
@@ -145,7 +162,7 @@ function storageBridge(saved) {
   const record = (area, change) => {
     const all = { local: Object.fromEntries(areas.local), session: Object.fromEntries(areas.session) };
     window.name = prefix + JSON.stringify(all);
-    parent.postMessage({ postplanStorage: { area, ...change } }, "*");
+    parent.postMessage({ postplanStorage: { area, token, ...change } }, "*");
   };
   for (const area of ["local", "session"]) {
     const data = (areas[area] = new Map(Object.entries(state[area] || {})));
