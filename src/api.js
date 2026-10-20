@@ -94,7 +94,8 @@ export function createApp() {
   app.get("/", (req, res, next) => {
     // Draft hosts fall through to the draft route at the end.
     if (getDraftRefFromRequest(req)) return next();
-    res.type("html").send(renderHome({ publicBaseUrl: getHomeUrlForRequest(req) }));
+    // PostplanPro: the stock home page is a stub, so the apex opens the dashboard.
+    res.redirect("/dashboard");
   });
 
   app.get("/healthz", async (req, res) => {
