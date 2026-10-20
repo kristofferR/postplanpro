@@ -6,7 +6,10 @@
 // draft, so saved state survives reloads and new versions.
 
 // What the opaque origin still rules out, reported by /api/check.
-export const FULL_ACCESS_LIMITS = ["indexedDB, cookies, Cache Storage, and service workers"];
+export const FULL_ACCESS_LIMITS = [
+  "indexedDB, cookies, Cache Storage, and service workers",
+  "localStorage and sessionStorage in multi-page drafts, which skip the viewer"
+];
 
 // Every sandbox capability except allow-same-origin, which would give the draft
 // the shell's origin and with it the signed-in dashboard.
@@ -54,66 +57,102 @@ export function renderViewer({ html, draftId, title, versionNumbers, currentVers
 </html>`;
 }
 
-// Runs in the shell: hands the draft its saved storage, then persists changes.
+// Runs in the shell: hands the draft its saved storage, then applies each
+// change the draft reports.
 function startViewer(draftId, bridgeSource) {
   const frame = document.getElementById("draft");
-  const key = `postplan:${draftId}`;
+  const storageKey = `postplan:${draftId}`;
   const stores = {};
-  const saved = {};
   for (const area of ["local", "session"]) {
-    saved[area] = {};
     try {
       stores[area] = window[`${area}Storage`];
-      saved[area] = JSON.parse(stores[area].getItem(key)) || {};
     } catch {
-      // Storage is blocked or the saved copy is unreadable; start empty.
+      // Storage is blocked; the draft keeps in-memory storage for this visit.
     }
   }
+  // Read fresh for every change, so writes from other tabs of the draft survive.
+  const read = (area) => {
+    try {
+      return JSON.parse(stores[area].getItem(storageKey)) || {};
+    } catch {
+      return {};
+    }
+  };
 
   addEventListener("message", (event) => {
-    const { area, entries } = event.data?.postplanStorage || {};
-    if (event.source !== frame.contentWindow || !Object.hasOwn(stores, area)) return;
+    const change = event.data?.postplanStorage;
+    if (event.source !== frame.contentWindow || !Object.hasOwn(stores, change?.area)) return;
+    const entries = new Map(Object.entries(read(change.area)));
+    if (change.op === "clear") entries.clear();
+    else if (change.op === "remove") entries.delete(String(change.key));
+    else entries.set(String(change.key), String(change.value));
     try {
-      stores[area].setItem(key, JSON.stringify(entries));
+      stores[change.area].setItem(storageKey, JSON.stringify(Object.fromEntries(entries)));
     } catch {
       // Over quota: the draft keeps its in-memory copy for this visit.
     }
   });
 
   const html = JSON.parse(document.getElementById("draft-html").textContent);
-  const state = JSON.stringify(saved).replace(/</g, "\\u003c");
-  frame.srcdoc = `<script>(${bridgeSource})(${state})<\/script>${html}`;
+  const state = JSON.stringify({ local: read("local"), session: read("session") }).replace(/</g, "\\u003c");
+  const doctype = html.match(/^\s*<!doctype[^>]*>/i)?.[0] ?? "";
+  frame.srcdoc = `${doctype}<script>(${bridgeSource})(${state})<\/script>${html.slice(doctype.length)}`;
   // Dark while loading so dark drafts never flash, then white behind drafts
   // that set no background, as in a normal tab.
   frame.addEventListener("load", () => (frame.style.background = "#fff"), { once: true });
 }
 
 // Runs first in the draft. The opaque origin has no storage, so this installs
-// in-memory copies that report every change to the shell. Preceding the
-// draft's doctype is harmless: srcdoc documents never enter quirks mode.
+// in-memory Storage objects that report each change to the shell. The state
+// also rides in window.name, which survives a reload inside the frame, where
+// srcdoc would restart from the snapshot taken when the shell loaded.
 function storageBridge(saved) {
+  const prefix = "postplan-storage:";
+  let state = saved;
+  try {
+    if (window.name.startsWith(prefix)) state = JSON.parse(window.name.slice(prefix.length));
+  } catch {
+    // Unreadable: start from the shell's snapshot.
+  }
+  // window.name outlives the document, so drop it before leaving for another
+  // page that could read it. Without the Navigation API it stays set.
+  window.navigation?.addEventListener("navigate", (event) => {
+    if (event.navigationType !== "reload" && !event.destination.sameDocument) window.name = "";
+  });
+
+  const areas = {};
+  const record = (area, change) => {
+    const all = { local: Object.fromEntries(areas.local), session: Object.fromEntries(areas.session) };
+    window.name = prefix + JSON.stringify(all);
+    parent.postMessage({ postplanStorage: { area, ...change } }, "*");
+  };
   for (const area of ["local", "session"]) {
-    const data = new Map(Object.entries(saved[area] || {}));
-    const save = () =>
-      parent.postMessage({ postplanStorage: { area, entries: Object.fromEntries(data) } }, "*");
-    const storage = {
-      get length() {
-        return data.size;
-      },
+    const data = (areas[area] = new Map(Object.entries(state[area] || {})));
+    const methods = {
       key: (index) => [...data.keys()][index] ?? null,
       getItem: (key) => data.get(String(key)) ?? null,
       setItem(key, value) {
         data.set(String(key), String(value));
-        save();
+        record(area, { op: "set", key: String(key), value: String(value) });
       },
       removeItem(key) {
-        if (data.delete(String(key))) save();
+        if (data.delete(String(key))) record(area, { op: "remove", key: String(key) });
       },
       clear() {
         data.clear();
-        save();
+        record(area, { op: "clear" });
       }
     };
+    // Named properties (localStorage.theme = "dark") act on entries, as on real Storage.
+    const storage = new Proxy(methods, {
+      get: (target, key) => (key === "length" ? data.size : key in target ? target[key] : data.get(key)),
+      set: (target, key, value) => (methods.setItem(key, value), true),
+      deleteProperty: (target, key) => (methods.removeItem(key), true),
+      has: (target, key) => key in target || data.has(key),
+      ownKeys: () => [...data.keys()],
+      getOwnPropertyDescriptor: (target, key) =>
+        data.has(key) ? { value: data.get(key), writable: true, enumerable: true, configurable: true } : undefined
+    });
     Object.defineProperty(window, `${area}Storage`, { value: storage, configurable: true, enumerable: true });
   }
 }

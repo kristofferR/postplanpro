@@ -17,6 +17,13 @@ test("full access publishes markup the stock policy blocks", () => {
   assert.equal(result.hasScripts, true);
 });
 
+test("full access still warns about APIs its sandbox blocks", () => {
+  const result = validateHtml("<!doctype html><title>Db</title><script>indexedDB.open('x')</script>", {
+    fullAccess: true
+  });
+  assert.deepEqual(result.issues.map((issue) => issue.code), ["sandbox-indexeddb"]);
+});
+
 test("full access keeps structural limits", () => {
   const result = validateUpload([{ path: "index.html", html: page }], { maxBytes: 10, fullAccess: true });
   assert.equal(result.ok, false);

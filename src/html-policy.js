@@ -306,7 +306,7 @@ export function validateHtml(html, options = {}) {
     issues.error("too-deep", `HTML is nested more than ${MAX_DEPTH} levels deep.`);
   }
 
-  for (const api of SANDBOX_APIS) {
+  for (const api of options.fullAccess ? FULL_ACCESS_SANDBOX_APIS : SANDBOX_APIS) {
     const source = scriptSources.find(({ text }) => api.pattern.test(text));
     if (source) {
       issues.warning(api.code, api.message, { node: source.node, attr: source.attr, fix: api.fix });
@@ -497,18 +497,38 @@ function createIssueList() {
   };
 }
 
-// PostplanPro: full-access drafts run in an unrestricted sandbox, so only
-// structural errors block them and the sandbox warnings do not apply.
+// PostplanPro: full-access drafts skip the markup policy, so only structural
+// errors block them.
 const STRUCTURAL_ERRORS = new Set(["empty", "too-large", "parse-failed", "too-deep"]);
 
 function relaxForFullAccess(issues) {
-  const { error, warning } = issues;
-  return {
-    ...issues,
-    error: (code, ...rest) => STRUCTURAL_ERRORS.has(code) && error(code, ...rest),
-    warning: (code, ...rest) => !code.startsWith("sandbox-") && warning(code, ...rest)
-  };
+  const { error } = issues;
+  return { ...issues, error: (code, ...rest) => STRUCTURAL_ERRORS.has(code) && error(code, ...rest) };
 }
+
+// What the full-access sandbox still blocks: its opaque origin has no
+// IndexedDB, cookies, or service workers.
+const FULL_ACCESS_FIX = "Use localStorage, which the viewer persists.";
+const FULL_ACCESS_SANDBOX_APIS = [
+  {
+    code: "sandbox-indexeddb",
+    pattern: /\bindexedDB\b/,
+    message: "Scripts use indexedDB, which throws in the full-access sandbox.",
+    fix: FULL_ACCESS_FIX
+  },
+  {
+    code: "sandbox-cookie",
+    pattern: /\bdocument\.cookie\b/,
+    message: "Scripts use document.cookie, which throws in the full-access sandbox.",
+    fix: FULL_ACCESS_FIX
+  },
+  {
+    code: "sandbox-service-worker",
+    pattern: /\bserviceWorker\b/,
+    message: "Scripts register a service worker, which the full-access sandbox blocks.",
+    fix: "Run the code on the page or in a blob: worker."
+  }
+];
 
 function result({ issues, title, hasScripts, bytes, externalImageHosts }) {
   const list = issues.list();
