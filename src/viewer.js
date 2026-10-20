@@ -94,6 +94,27 @@ function startViewer(draftId, bridgeSource) {
   });
 
   const html = JSON.parse(document.getElementById("draft-html").textContent);
+
+  // Drafts opened before this viewer ran on the shell's own origin, so their
+  // saved keys sit unprefixed in its localStorage. Once per draft, copy in the
+  // ones its source names, keeping any newer value saved through the bridge.
+  const migratedKey = `postplan-legacy:${draftId}`;
+  try {
+    if (stores.local && !stores.local.getItem(migratedKey)) {
+      const entries = new Map(Object.entries(read("local")));
+      const size = entries.size;
+      for (let index = 0; index < stores.local.length; index++) {
+        const key = stores.local.key(index);
+        const own = key.startsWith("postplan:") || key.startsWith("postplan-legacy:");
+        if (key && !own && !entries.has(key) && html.includes(key)) entries.set(key, stores.local.getItem(key));
+      }
+      if (entries.size > size) stores.local.setItem(storageKey, JSON.stringify(Object.fromEntries(entries)));
+      stores.local.setItem(migratedKey, "1");
+    }
+  } catch {
+    // Over quota or blocked: the draft starts from what the bridge saved.
+  }
+
   const state = JSON.stringify({ local: read("local"), session: read("session") }).replace(/</g, "\\u003c");
   const doctype = html.match(/^\s*<!doctype[^>]*>/i)?.[0] ?? "";
   frame.srcdoc = `${doctype}<script>(${bridgeSource})(${state})<\/script>${html.slice(doctype.length)}`;
