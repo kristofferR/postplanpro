@@ -8,17 +8,42 @@ Kris's fork of [Postplan](https://www.npmjs.com/package/postplan) for a self-hos
 - `/raw` never runs scripts, for any account.
 - A custom favicon, and the apex `/` redirects to `/dashboard`.
 
-## Upgrading from upstream
+## Upstream releases
 
-Postplan's source is only published to npm. The `upstream` branch holds each release unmodified, and `main` is upstream plus this fork's commits. To upgrade:
+Postplan's source is only published to npm. The `upstream` branch holds each release unmodified, and `main` is upstream plus this fork's commits. The root `package.json` stays identical to upstream so version bumps merge cleanly.
+
+The Upstream workflow runs daily. Once a new release is 3 days old, it imports the release onto `upstream`, merges it into `main`, runs the tests, and pushes. A conflict or failing test opens an issue instead. By hand:
 
 ```sh
 scripts/import-upstream.sh 0.0.6
 git merge upstream
-bun install
-bun run test
-bun run dev:local   # Postplan on http://localhost:3000 with in-memory Postgres and S3
+bun install && bun run test
 ```
+
+## Local dev
+
+```sh
+bun install && bun install --cwd scripts
+node scripts/dev.mjs   # Postplan on http://localhost:3000 with in-memory Postgres and S3
+```
+
+## Deploying
+
+The server follows `main`. Its start command installs the commit `main` points at, and `src/serve-latest.js` exits within 10 minutes of `main` moving, so Docker restarts the container onto the new commit. A commit that fails to start keeps the site down until a fix lands on `main`.
+
+The start command, with `$` escaped as `$$` in the compose file:
+
+```sh
+latest=$(node -e 'fetch("https://api.github.com/repos/kristofferR/postplanpro/commits/main",{headers:{accept:"application/vnd.github.sha"},signal:AbortSignal.timeout(10000)}).then(r=>r.ok?r.text():"").then(t=>process.stdout.write(t.trim()),()=>{})')
+case "$latest" in *[!0-9a-f]*|"") latest= ;; esac
+if [ -n "$latest" ] && [ "$latest" != "$(cat node_modules/.postplanpro-ref 2>/dev/null)" ]; then
+  npm install --no-save --ignore-scripts "https://codeload.github.com/kristofferR/postplanpro/tar.gz/$latest" && echo "$latest" > node_modules/.postplanpro-ref
+fi
+export POSTPLAN_RUNNING_REF=$(cat node_modules/.postplanpro-ref)
+exec node node_modules/postplan/src/serve-latest.js
+```
+
+If GitHub is unreachable at start, the installed commit keeps serving.
 
 The rest of this README is upstream's.
 
