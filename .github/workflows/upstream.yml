@@ -38,19 +38,25 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git branch upstream origin/upstream
 
+      # Picks the newest stable, still-published release that has cleared the
+      # cooldown, read from the registry document so it does not depend on the
+      # npm CLI's output format.
       - name: Import a new release
         run: |
           current=$(git show upstream:package.json | jq -r .version)
-          latest=$(npm view postplan version)
-          published=$(npm view postplan time --json | jq -r --arg v "$latest" '.[$v]')
-          age_days=$(( ($(date +%s) - $(date -d "$published" +%s)) / 86400 ))
-          newest=$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -n1)
-          if [ "$latest" = "$current" ] || [ "$newest" != "$latest" ]; then
-            echo "upstream is at $current; npm latest is $latest"
-          elif [ "$age_days" -lt "$MIN_RELEASE_AGE_DAYS" ]; then
-            echo "postplan $latest is $age_days days old; waiting for $MIN_RELEASE_AGE_DAYS"
+          cutoff=$(date -u -d "-$MIN_RELEASE_AGE_DAYS days" +%Y-%m-%dT%H:%M:%SZ)
+          eligible=$(curl -fsSL https://registry.npmjs.org/postplan | jq -r --arg cutoff "$cutoff" '
+            (.versions | keys) as $published
+            | .time | to_entries[]
+            | select(.key | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))
+            | select(.key as $version | $published | index($version))
+            | select(.value <= $cutoff)
+            | .key' | sort -V | tail -n1)
+          newest=$(printf '%s\n%s\n' "$current" "$eligible" | sort -V | tail -n1)
+          if [ -z "$eligible" ] || [ "$newest" = "$current" ]; then
+            echo "upstream is at $current; no newer release is $MIN_RELEASE_AGE_DAYS days old"
           else
-            scripts/import-upstream.sh "$latest"
+            scripts/import-upstream.sh "$eligible"
             git push origin upstream
           fi
 
