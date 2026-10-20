@@ -8,6 +8,7 @@
 // What the opaque origin still rules out, reported by /api/check.
 export const FULL_ACCESS_LIMITS = [
   "indexedDB, cookies, Cache Storage, and service workers",
+  "camera, microphone, geolocation, and other permission-gated APIs",
   "localStorage and sessionStorage in multi-page drafts, which skip the viewer"
 ];
 
