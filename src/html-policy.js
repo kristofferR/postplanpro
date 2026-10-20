@@ -144,7 +144,7 @@ const MAX_DEPTH = 512;
 // tools. `hasScripts` means the page contains code the browser would run.
 export function validateHtml(html, options = {}) {
   const maxBytes = options.maxBytes ?? Infinity;
-  const issues = createIssueList();
+  const issues = options.fullAccess ? relaxForFullAccess(createIssueList()) : createIssueList();
 
   if (typeof html !== "string" || html.trim() === "") {
     issues.error("empty", "HTML document is empty.");
@@ -306,7 +306,7 @@ export function validateHtml(html, options = {}) {
     issues.error("too-deep", `HTML is nested more than ${MAX_DEPTH} levels deep.`);
   }
 
-  for (const api of SANDBOX_APIS) {
+  for (const api of options.fullAccess ? FULL_ACCESS_SANDBOX_APIS : SANDBOX_APIS) {
     const source = scriptSources.find(({ text }) => api.pattern.test(text));
     if (source) {
       issues.warning(api.code, api.message, { node: source.node, attr: source.attr, fix: api.fix });
@@ -329,7 +329,10 @@ export function validateHtml(html, options = {}) {
 // Validates a whole upload: one page, or a folder of pages that link to each
 // other by relative path. Enforces the caller's limits and capabilities, so
 // /api/uploads and the /api/check preflight always agree.
-export function validateUpload(pages, { maxBytes = Infinity, maxPages = Infinity, inlineScripts = true } = {}) {
+export function validateUpload(
+  pages,
+  { maxBytes = Infinity, maxPages = Infinity, inlineScripts = true, fullAccess = false } = {}
+) {
   const issues = [];
   const results = [];
   const multiPage = Array.isArray(pages) && pages.length > 1;
@@ -363,7 +366,7 @@ export function validateUpload(pages, { maxBytes = Infinity, maxPages = Infinity
     }
     seen.add(path);
 
-    const validation = validateHtml(page.html);
+    const validation = validateHtml(page.html, { fullAccess });
     results.push({ path, html: page.html, ...validation });
     issues.push(...validation.issues.map((issue) => (multiPage ? { path, ...issue } : issue)));
   }
@@ -493,6 +496,45 @@ function createIssueList() {
     list: () => [...byKey.values()]
   };
 }
+
+// PostplanPro: full-access drafts skip the markup policy, so only structural
+// errors block them.
+const STRUCTURAL_ERRORS = new Set(["empty", "too-large", "parse-failed", "too-deep"]);
+
+function relaxForFullAccess(issues) {
+  const { error } = issues;
+  return { ...issues, error: (code, ...rest) => STRUCTURAL_ERRORS.has(code) && error(code, ...rest) };
+}
+
+// What the full-access sandbox still blocks: its opaque origin has no
+// IndexedDB, cookies, or service workers, and can only start blob: workers.
+const FULL_ACCESS_FIX = "Use localStorage, which the viewer persists in single-page drafts.";
+const FULL_ACCESS_SANDBOX_APIS = [
+  {
+    code: "sandbox-indexeddb",
+    pattern: /\bindexedDB\b/,
+    message: "Scripts use indexedDB, which throws in the full-access sandbox.",
+    fix: FULL_ACCESS_FIX
+  },
+  {
+    code: "sandbox-cookie",
+    pattern: /\bdocument\.cookie\b/,
+    message: "Scripts use document.cookie, which throws in the full-access sandbox.",
+    fix: FULL_ACCESS_FIX
+  },
+  {
+    code: "sandbox-worker-url",
+    pattern: /\bnew\s+(?:Shared)?Worker\s*\(\s*["'`]/,
+    message: "Scripts start a worker from a URL, which cannot load in the full-access sandbox.",
+    fix: "Create the worker from a blob: URL, for example new Worker(URL.createObjectURL(blob))."
+  },
+  {
+    code: "sandbox-service-worker",
+    pattern: /\bserviceWorker\b/,
+    message: "Scripts register a service worker, which the full-access sandbox blocks.",
+    fix: "Run the code on the page or in a blob: worker."
+  }
+];
 
 function result({ issues, title, hasScripts, bytes, externalImageHosts }) {
   const list = issues.list();

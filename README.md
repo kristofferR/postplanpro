@@ -2,6 +2,12 @@
 
 Kris's fork of [Postplan](https://www.npmjs.com/package/postplan) for a self-hosted instance.
 
+## What the fork changes
+
+- **Full-access drafts.** Accounts listed in `POSTPLAN_FULL_ACCESS_ACCOUNTS` (comma-separated account IDs; `GET /api/me` shows yours) can publish any HTML: external and module scripts, `fetch`, workers, `eval`, wasm, forms, iframes, modals, popups, and downloads. A single-page draft opens in a viewer shell with a version switcher, and runs in an opaque-origin sandboxed iframe that cannot reach the shell, the dashboard, or Postplan cookies. `localStorage` and `sessionStorage` work through a bridge to the shell, namespaced per draft. IndexedDB, cookies, Cache Storage, service workers, and permission-gated APIs such as the camera are unavailable. Multi-page drafts are served directly under the same sandbox, without the storage bridge. Other accounts and anonymous uploads keep stock Postplan behavior.
+- `/raw` never runs scripts, for any account.
+- A custom favicon, and the apex `/` redirects to `/dashboard`.
+
 ## Upgrading from upstream
 
 Postplan's source is only published to npm. The `upstream` branch holds each release unmodified, and `main` is upstream plus this fork's commits. To upgrade:

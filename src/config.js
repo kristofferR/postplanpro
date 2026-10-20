@@ -14,6 +14,12 @@ export const config = {
   // Web sign-in (dashboard). Absent POSTPLAN_SESSION_SECRET, all web-auth
   // routes respond 503 and the API/serving paths are unaffected.
   sessionSecret: process.env.POSTPLAN_SESSION_SECRET,
+  // PostplanPro: comma-separated account IDs whose drafts may use the whole
+  // browser platform (see viewer.js). Everyone else gets stock Postplan.
+  fullAccessAccountIds: (process.env.POSTPLAN_FULL_ACCESS_ACCOUNTS || "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean),
   shooBaseUrl: (process.env.SHOO_BASE_URL || "https://shoo.dev").replace(/\/+$/, ""),
   s3: {
     endpoint: process.env.AWS_ENDPOINT_URL || process.env.S3_ENDPOINT,
