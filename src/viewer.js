@@ -158,6 +158,25 @@ function storageBridge(saved) {
     if (event.navigationType !== "reload" && !event.destination.sameDocument) window.name = "";
   });
 
+  // A srcdoc document resolves links against the shell's URL, so a plain link
+  // to it would load a second viewer inside this frame. Keep in-page anchors
+  // here and send other links on the shell's origin to the top window.
+  addEventListener("click", (event) => {
+    const link = event.target.closest?.("a[href]");
+    const plain = event.button === 0 && !(event.metaKey || event.ctrlKey || event.shiftKey || event.altKey);
+    if (!(link instanceof HTMLAnchorElement) || !plain || event.defaultPrevented) return;
+    if (link.target && link.target !== "_self") return;
+    const url = new URL(link.href);
+    const base = new URL(document.baseURI);
+    if (url.origin !== base.origin) return;
+    if (url.hash && url.pathname === base.pathname && url.search === base.search) {
+      event.preventDefault();
+      location.hash = url.hash;
+    } else {
+      link.target = "_top";
+    }
+  });
+
   const areas = {};
   const record = (area, change) => {
     const all = { local: Object.fromEntries(areas.local), session: Object.fromEntries(areas.session) };

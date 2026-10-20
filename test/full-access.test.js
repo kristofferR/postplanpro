@@ -13,7 +13,8 @@ test("full access publishes markup the stock policy blocks", () => {
 
   const result = validateHtml(page, { fullAccess: true });
   assert.deepEqual(result.errors, []);
-  assert.deepEqual(result.warnings, []);
+  // Only the URL-based worker is left: an opaque origin can only start blob: workers.
+  assert.deepEqual(result.issues.map((issue) => issue.code), ["sandbox-worker-url"]);
   assert.equal(result.hasScripts, true);
 });
 
@@ -27,7 +28,8 @@ test("full access still warns about APIs its sandbox blocks", () => {
 test("full access keeps structural limits", () => {
   const result = validateUpload([{ path: "index.html", html: page }], { maxBytes: 10, fullAccess: true });
   assert.equal(result.ok, false);
-  assert.deepEqual(result.issues.map((issue) => issue.code), ["too-large"]);
+  const errors = result.issues.filter((issue) => issue.level === "error");
+  assert.deepEqual(errors.map((issue) => issue.code), ["too-large"]);
 });
 
 test("the viewer carries the draft as inert data in an opaque-origin frame", () => {

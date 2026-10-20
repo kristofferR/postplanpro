@@ -507,8 +507,8 @@ function relaxForFullAccess(issues) {
 }
 
 // What the full-access sandbox still blocks: its opaque origin has no
-// IndexedDB, cookies, or service workers.
-const FULL_ACCESS_FIX = "Use localStorage, which the viewer persists.";
+// IndexedDB, cookies, or service workers, and can only start blob: workers.
+const FULL_ACCESS_FIX = "Use localStorage, which the viewer persists in single-page drafts.";
 const FULL_ACCESS_SANDBOX_APIS = [
   {
     code: "sandbox-indexeddb",
@@ -521,6 +521,12 @@ const FULL_ACCESS_SANDBOX_APIS = [
     pattern: /\bdocument\.cookie\b/,
     message: "Scripts use document.cookie, which throws in the full-access sandbox.",
     fix: FULL_ACCESS_FIX
+  },
+  {
+    code: "sandbox-worker-url",
+    pattern: /\bnew\s+(?:Shared)?Worker\s*\(\s*["'`]/,
+    message: "Scripts start a worker from a URL, which cannot load in the full-access sandbox.",
+    fix: "Create the worker from a blob: URL, for example new Worker(URL.createObjectURL(blob))."
   },
   {
     code: "sandbox-service-worker",
