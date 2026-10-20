@@ -12,7 +12,7 @@ Kris's fork of [Postplan](https://www.npmjs.com/package/postplan) for a self-hos
 
 Postplan's source is only published to npm. The `upstream` branch holds each release unmodified, and `main` is upstream plus this fork's commits. The root `package.json` stays identical to upstream so version bumps merge cleanly.
 
-The Upstream workflow runs daily. Once a new release is 3 days old, it imports the release onto `upstream`, merges it into `main`, runs the tests, and pushes. A conflict or failing test opens an issue instead. By hand:
+The Upstream workflow runs daily. Once a new release is 3 days old, it imports the release onto `upstream`, merges it into `main`, runs the tests, and pushes. Imported code only runs in a read-only test job, and any failure opens an issue. By hand:
 
 ```sh
 scripts/import-upstream.sh 0.0.6

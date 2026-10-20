@@ -1,17 +1,16 @@
 name: Upstream
 
 # Imports new postplan npm releases onto the upstream branch and merges them
-# into main once the tests pass. The server deploys main by itself, so a release
-# goes live soon after its cooldown. A merge that needs a human opens an issue.
+# into main once the tests pass. The server deploys main by itself, so a
+# release goes live soon after its cooldown. Imported code only runs in the
+# read-only test job; the jobs holding a write token run nothing but git.
 
 on:
   schedule:
     - cron: "17 5 * * *"
   workflow_dispatch:
 
-permissions:
-  contents: write
-  issues: write
+permissions: {}
 
 concurrency:
   group: upstream
@@ -21,17 +20,17 @@ env:
   MIN_RELEASE_AGE_DAYS: 3
 
 jobs:
-  sync:
+  prepare:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.merge.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-      - uses: oven-sh/setup-bun@v2
 
       - name: Configure git
         run: |
@@ -64,23 +63,62 @@ jobs:
             echo "main already contains upstream"
             exit 0
           fi
-          echo "version=$(git show upstream:package.json | jq -r .version)" >> "$GITHUB_OUTPUT"
           git merge --no-edit upstream
-          bun install
-          bun run test
-          git push origin HEAD:main
+          git push --force origin HEAD:refs/heads/upstream-sync
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Report a merge that needs a human
-        if: failure() && steps.merge.outputs.version
+  test:
+    needs: prepare
+    if: needs.prepare.outputs.sha
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: bun run test
+
+  publish:
+    needs: [prepare, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      # A plain push, so it fails rather than overwrite main if main moved.
+      - name: Fast-forward main to the tested merge
+        env:
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          git fetch origin upstream-sync
+          git push origin "$SHA:refs/heads/main" ":refs/heads/upstream-sync"
+
+  report:
+    needs: [prepare, test, publish]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open an issue for a human
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.merge.outputs.version }}
+          GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          title="Merge postplan $VERSION into main"
+          title="Upstream sync failed"
           existing=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number')
           if [ -z "$existing" ]; then
-            gh issue create --title "$title" --body "The scheduled sync imported postplan $VERSION onto \`upstream\`, but merging it into main failed, from a conflict, a failing test, or main moving during the run: $RUN_URL
+            gh issue create --title "$title" --body "The scheduled upstream sync failed: $RUN_URL
 
-          Locally: \`git fetch\`, \`git switch main\`, \`git merge origin/upstream\`, resolve, \`bun run test\`, push. The workflow stops retrying once main contains upstream."
+          It retries daily. If a release did not merge or test cleanly, merge \`origin/upstream\` into main locally, resolve it, run \`bun run test\`, and push."
           fi
