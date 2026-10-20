@@ -1,0 +1,10 @@
+{
+  "name": "postplanpro-scripts",
+  "private": true,
+  "type": "module",
+  "description": "Dependencies of the local dev stack, kept out of the root package.json so it stays identical to upstream.",
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.10",
+    "@electric-sql/pglite-socket": "^0.2.13"
+  }
+}
