@@ -15,6 +15,7 @@ import { renderHome, renderNotFound } from "./render.js";
 import { createRateLimiter } from "./rate-limit.js";
 import { getHtmlObject, putHtmlObject } from "./storage.js";
 import { formatBytes, validateUpload } from "./html-policy.js";
+import { FULL_ACCESS_LIMITS, FULL_ACCESS_SANDBOX, renderViewer } from "./viewer.js";
 import { clientIp } from "./client-ip.js";
 import { listAccountDrafts } from "./drafts.js";
 import { registerWebRoutes } from "./web.js";
@@ -577,10 +578,11 @@ async function handleCheck(req, res, next) {
       limits: { maxBytes: capabilities.maxBytes, maxPages: capabilities.maxPages },
       capabilities: {
         inlineScripts: capabilities.inlineScripts,
+        fullAccess: capabilities.fullAccess,
         multiPage: capabilities.maxPages > 1,
         customUrls: capabilities.customUrls,
         externalAssets: "https images, video, audio, fonts, and stylesheets",
-        blockedInSandbox: SANDBOX_LIMITS
+        blockedInSandbox: capabilities.fullAccess ? FULL_ACCESS_LIMITS : SANDBOX_LIMITS
       }
     };
 
@@ -631,7 +633,8 @@ function uploadCapabilities(req) {
     maxBytes,
     maxPages: signedIn ? limits.maxPages : 1,
     inlineScripts: signedIn,
-    customUrls: flags.includes(FLAGS.customUrls)
+    customUrls: flags.includes(FLAGS.customUrls),
+    fullAccess: signedIn && config.fullAccessAccountIds.includes(req.auth.account_id)
   };
 }
 
@@ -723,6 +726,8 @@ function draftTarget(req) {
 // iframe wrapper, or consent interstitial: any heuristic that tried to tell an
 // agent from a browser inevitably misclassified some agent fetcher and hid the
 // draft content the service exists to share. A draft URL is just its HTML.
+// PostplanPro: full-access drafts are the exception and open in a viewer
+// shell; their /raw URL still serves the exact bytes.
 //
 // Below the draft root: "v/<n>/" pins a version, "raw" (or "raw/") names the
 // index page, and anything else names a page of a multi-page version.
@@ -735,7 +740,8 @@ async function serveDraft(req, res, { ref, segments }) {
     parts = parts.slice(2);
   }
   const rawWithSlash = parts[0] === "raw" && parts.length === 2 && parts[1] === "";
-  if (parts[0] === "raw" && (parts.length === 1 || rawWithSlash)) {
+  const raw = parts[0] === "raw" && (parts.length === 1 || rawWithSlash);
+  if (raw) {
     parts = [""];
   }
 
@@ -752,7 +758,7 @@ async function serveDraft(req, res, { ref, segments }) {
   if (pagePath === "" || pagePath === "index.html") {
     // Relative links between pages only resolve from a URL ending in "/".
     if (parts.length === 0 && multiPage) return redirectWithSlash(req, res);
-    return sendPage(res, { draft, version, page: version });
+    return sendPage(res, { draft, version, page: version, req, raw });
   }
   if (!multiPage) return sendNotFound(res);
 
@@ -773,9 +779,17 @@ async function serveDraft(req, res, { ref, segments }) {
 }
 
 // `page` is the version row for index.html, or a draft_pages row.
-async function sendPage(res, { draft, version, page }) {
+async function sendPage(res, { draft, version, page, req, raw = false }) {
   const html = await getHtmlObject(page.object_key);
+  res.setHeader("X-Postplan-Draft-Id", draft.id);
+  res.setHeader("X-Postplan-Draft-Version", String(Number(version.version_number)));
+  if (!raw && config.fullAccessAccountIds.includes(draft.account_id)) {
+    return sendFullAccessPage(req, res, { draft, version, html });
+  }
+  // PostplanPro: /raw never runs scripts, so a browser sees the same inert
+  // page an agent reads.
   const allowInlineScripts =
+    !raw &&
     page.has_inline_script === true &&
     Boolean(version.created_by_api_key_id) &&
     version.created_by_api_key_id !== publicUploadAuth.id;
@@ -783,9 +797,31 @@ async function sendPage(res, { draft, version, page }) {
     "Content-Security-Policy",
     draftContentSecurityPolicy({ allowInlineScripts })
   );
-  res.setHeader("X-Postplan-Draft-Id", draft.id);
-  res.setHeader("X-Postplan-Draft-Version", String(Number(version.version_number)));
   res.type("html").send(html);
+}
+
+// PostplanPro: single-page drafts open in the viewer shell (see viewer.js).
+// Pages of a multi-page draft are served directly so relative links resolve,
+// with the same opaque-origin sandbox applied by CSP.
+async function sendFullAccessPage(req, res, { draft, version, html }) {
+  if (Number(version.page_count || 1) > 1) {
+    res.setHeader("Content-Security-Policy", `sandbox ${FULL_ACCESS_SANDBOX}`);
+    return res.type("html").send(html);
+  }
+  const versions = await pool.query(
+    "SELECT version_number FROM draft_versions WHERE draft_id = $1 ORDER BY version_number",
+    [draft.id]
+  );
+  res.type("html").send(
+    renderViewer({
+      html,
+      draftId: draft.id,
+      title: draft.title,
+      versionNumbers: versions.rows.map((row) => Number(row.version_number)),
+      currentVersion: Number(version.version_number),
+      draftRoot: getDraftRefFromRequest(req) ? "" : `/d/${draft.id}`
+    })
+  );
 }
 
 function redirectWithSlash(req, res) {

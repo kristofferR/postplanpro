@@ -144,7 +144,7 @@ const MAX_DEPTH = 512;
 // tools. `hasScripts` means the page contains code the browser would run.
 export function validateHtml(html, options = {}) {
   const maxBytes = options.maxBytes ?? Infinity;
-  const issues = createIssueList();
+  const issues = options.fullAccess ? relaxForFullAccess(createIssueList()) : createIssueList();
 
   if (typeof html !== "string" || html.trim() === "") {
     issues.error("empty", "HTML document is empty.");
@@ -329,7 +329,10 @@ export function validateHtml(html, options = {}) {
 // Validates a whole upload: one page, or a folder of pages that link to each
 // other by relative path. Enforces the caller's limits and capabilities, so
 // /api/uploads and the /api/check preflight always agree.
-export function validateUpload(pages, { maxBytes = Infinity, maxPages = Infinity, inlineScripts = true } = {}) {
+export function validateUpload(
+  pages,
+  { maxBytes = Infinity, maxPages = Infinity, inlineScripts = true, fullAccess = false } = {}
+) {
   const issues = [];
   const results = [];
   const multiPage = Array.isArray(pages) && pages.length > 1;
@@ -363,7 +366,7 @@ export function validateUpload(pages, { maxBytes = Infinity, maxPages = Infinity
     }
     seen.add(path);
 
-    const validation = validateHtml(page.html);
+    const validation = validateHtml(page.html, { fullAccess });
     results.push({ path, html: page.html, ...validation });
     issues.push(...validation.issues.map((issue) => (multiPage ? { path, ...issue } : issue)));
   }
@@ -491,6 +494,19 @@ function createIssueList() {
     error: (...args) => add("error", ...args),
     warning: (...args) => add("warning", ...args),
     list: () => [...byKey.values()]
+  };
+}
+
+// PostplanPro: full-access drafts run in an unrestricted sandbox, so only
+// structural errors block them and the sandbox warnings do not apply.
+const STRUCTURAL_ERRORS = new Set(["empty", "too-large", "parse-failed", "too-deep"]);
+
+function relaxForFullAccess(issues) {
+  const { error, warning } = issues;
+  return {
+    ...issues,
+    error: (code, ...rest) => STRUCTURAL_ERRORS.has(code) && error(code, ...rest),
+    warning: (code, ...rest) => !code.startsWith("sandbox-") && warning(code, ...rest)
   };
 }
 
