@@ -113,7 +113,7 @@ program
         "--new cannot be combined with --draft or --slug: those name an existing draft. Use an unused slug to create a new draft at a custom URL."
       );
     }
-    const { apiUrl, apiKey } = readAuth(options.apiUrl, { requireApiKey: false });
+    const { apiUrl, apiKey } = readAuth(options.apiUrl);
     const source = readUploadSource(target);
     // A slug names the draft by itself, so the saved mapping for this path is
     // only used without one. `--draft <id> --slug <name>` renames a draft.
@@ -270,13 +270,112 @@ program
       const count = `${draft.versionCount} version${draft.versionCount === 1 ? "" : "s"}`;
       const disabled = draft.disabled ? " · disabled" : "";
 
-      console.log(draft.title || "Untitled Draft");
+      console.log(`${draft.favorite ? "★ " : ""}${draft.title || "Untitled Draft"}`);
       console.log(`  ${repo} · ${version} · ${count} · updated ${timeAgo(draft.updatedAt)}${disabled}`);
       console.log(`  ${draft.publicUrl}`);
       if (draft.description) {
         console.log(`  ${draft.description}`);
       }
       console.log("");
+    }
+  });
+
+const DRAFT_ARGUMENT = "Draft ID, custom URL name, or draft URL";
+
+program
+  .command("favorite")
+  .argument("<draft>", DRAFT_ARGUMENT)
+  .option("--api-url <url>", "Override the default Postplan API base URL")
+  .description("Pin one of your drafts to the top of the dashboard and `postplan list`.")
+  .action((input, options) => setFavorite(input, options, true));
+
+program
+  .command("unfavorite")
+  .argument("<draft>", DRAFT_ARGUMENT)
+  .option("--api-url <url>", "Override the default Postplan API base URL")
+  .description("Remove a draft from your favorites.")
+  .action((input, options) => setFavorite(input, options, false));
+
+program
+  .command("download")
+  .argument("<draft>", DRAFT_ARGUMENT)
+  .option("--json", "Print the download receipt as JSON")
+  .option("--api-url <url>", "Override the default Postplan API base URL")
+  .description(
+    "Save a draft's latest HTML to a new file (a folder for multi-page drafts) to edit and upload again."
+  )
+  .action(async (input, options) => {
+    const { apiUrl, apiKey } = readAuth(options.apiUrl, { requireApiKey: false });
+    const ref = parseDraftRef(input, apiUrl);
+    const { ok, status, body } = await requestJson(
+      `${apiUrl}/api/drafts/${encodeURIComponent(ref)}/source`,
+      { apiKey, timeoutMs: 120_000 }
+    );
+    if (!ok) {
+      throw new CliError(`Download failed (HTTP ${status}): ${body.error || "unknown error"}`);
+    }
+
+    // Never overwrite: "<name>-v3.html", then "<name>-v3-2.html", and so on.
+    const multiPage = body.pages.length > 1;
+    const target = uniquePath(
+      path.resolve(`${body.slug || body.draftId}-v${body.versionNumber}${multiPage ? "" : ".html"}`)
+    );
+    if (multiPage) {
+      fs.mkdirSync(target);
+      for (const page of body.pages) {
+        const file = path.resolve(target, page.path);
+        if (!file.startsWith(target + path.sep)) {
+          throw new CliError(`Refusing to write a page outside ${target}: ${page.path}`);
+        }
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, page.html);
+      }
+    } else {
+      fs.writeFileSync(target, body.pages[0].html, { flag: "wx" });
+    }
+
+    // Only the owner can update the draft. Anyone else's upload of this copy
+    // publishes a new draft, so their command uses --new.
+    const receipt = {
+      ok: true,
+      draftId: body.draftId,
+      slug: body.slug,
+      title: body.title,
+      versionNumber: body.versionNumber,
+      owned: body.owned,
+      path: target,
+      pages: body.pages.map((page) => page.path),
+      uploadCommand: [
+        "postplan upload",
+        shellQuote(path.relative(process.cwd(), target)),
+        body.owned ? `--draft ${body.draftId}` : "--new",
+        apiUrl === DEFAULT_API_URL ? null : `--api-url ${shellQuote(apiUrl)}`
+      ]
+        .filter(Boolean)
+        .join(" ")
+    };
+
+    if (options.json) {
+      printJson(receipt);
+    } else {
+      console.log(`Downloaded "${receipt.title}" v${receipt.versionNumber} to ${receipt.path}`);
+      if (!receipt.owned) {
+        console.log("This draft is not on your account, so uploading it publishes a new draft.");
+      }
+      console.log(`Upload edits: ${receipt.uploadCommand}`);
+    }
+
+    // Lets a plain `postplan upload <path>` update the draft too.
+    if (body.owned) {
+      try {
+        saveDraftMapping(apiUrl, target, {
+          draftId: body.draftId,
+          slug: body.slug,
+          latestVersionNumber: body.versionNumber
+        });
+      } catch (error) {
+        console.error(`Warning: could not save the local draft mapping: ${error.message}`);
+      }
     }
   });
 
@@ -308,10 +407,52 @@ function readAuth(apiUrlOverride, { requireApiKey = true } = {}) {
   const apiKey = process.env.POSTPLAN_API_KEY || credentials.apiKey;
 
   if (requireApiKey && !apiKey) {
-    throw new CliError("Missing API key. Run: postplan auth set <api-key>");
+    throw new CliError("Missing API key. Run: postplan auth login");
   }
 
   return { apiUrl, apiKey };
+}
+
+async function setFavorite(input, options, favorite) {
+  const { apiUrl, apiKey } = readAuth(options.apiUrl);
+  const ref = parseDraftRef(input, apiUrl);
+  const { ok, body } = await requestJson(`${apiUrl}/api/drafts/${encodeURIComponent(ref)}/favorite`, {
+    apiKey,
+    body: { favorite }
+  });
+  if (!ok) {
+    throw new CliError(body.error || "Failed to update favorites.");
+  }
+  console.log(favorite ? `Added ${ref} to favorites.` : `Removed ${ref} from favorites.`);
+}
+
+// Turns a draft ID, custom URL name, or draft URL into the draft's ref.
+// Draft URLs look like https://<ref>.postplan.dev/... or https://postplan.dev/d/<ref>/...
+function parseDraftRef(input, apiUrl) {
+  if (!input.includes("://")) return input.toLowerCase();
+  let url;
+  try {
+    url = new URL(input);
+  } catch {
+    throw new CliError(`Not a valid URL: ${input}`);
+  }
+  const apexMatch = url.pathname.match(/^\/d\/([^/]+)/);
+  if (apexMatch) return apexMatch[1].toLowerCase();
+  const apiHost = new URL(apiUrl).hostname;
+  if (url.hostname.endsWith(`.${apiHost}`)) {
+    return url.hostname.slice(0, -(apiHost.length + 1));
+  }
+  throw new CliError(`${input} is not a Postplan draft URL.`);
+}
+
+// Returns `file`, or the first free "<name>-2<ext>", "<name>-3<ext>", ...
+function uniquePath(file) {
+  const { dir, name, ext } = path.parse(file);
+  let candidate = file;
+  for (let n = 2; fs.existsSync(candidate); n++) {
+    candidate = path.join(dir, `${name}-${n}${ext}`);
+  }
+  return candidate;
 }
 
 function ensureStateDir() {
@@ -506,7 +647,7 @@ function printReceipt(receipt) {
   console.log(`Draft ID: ${receipt.draftId}`);
   console.log(`Version: ${receipt.versionNumber}`);
   if (receipt.pages) console.log(`Pages: ${receipt.pages.map((page) => page.path).join(", ")}`);
-  console.log(`Account: ${receipt.account || "anonymous"}`);
+  console.log(`Account: ${receipt.account}`);
   console.log(`Update: ${receipt.updateCommand}`);
   for (const warning of receipt.warnings) {
     console.warn(`Warning: ${warning}`);
@@ -519,13 +660,9 @@ function printCheckReport(report) {
     console.log(`Offline: ${report.networkError}`);
     console.log("Checked markup locally. Account, limits, and script permission were not checked.");
   } else if (report.limits) {
-    const account = report.account
-      ? `${report.account.name} (key: ${report.account.apiKeyName})`
-      : "none (anonymous upload)";
-    console.log(`Account: ${account}`);
+    console.log(`Account: ${report.account.name} (key: ${report.account.apiKeyName})`);
     console.log(`Flags: ${report.flags.length ? report.flags.join(", ") : "none"}`);
     console.log(`Limit: ${formatBytes(report.limits.maxBytes)} per upload, ${report.limits.maxPages} page(s)`);
-    console.log(`Inline JavaScript: ${report.capabilities.inlineScripts ? "allowed (sandboxed)" : "needs `postplan auth login`"}`);
     console.log(`Custom URLs: ${report.capabilities.customUrls ? "enabled" : "not enabled"}`);
   }
   if (report.slug) {

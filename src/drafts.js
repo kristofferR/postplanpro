@@ -2,9 +2,9 @@ import { pool } from "./db.js";
 import { config } from "./config.js";
 import { getDraftPublicUrl, getDraftRawUrl } from "./public-url.js";
 
-// The "my docs" feed: every draft owned by an account, newest first, with the
-// aggregates a dashboard needs (latest version, version count, repo). Shared
-// by GET /api/drafts and the server-rendered dashboard.
+// The "my docs" feed: every draft owned by an account, favorites first, then
+// newest first, with the aggregates a dashboard needs (latest version, version
+// count, repo). Shared by GET /api/drafts and the server-rendered dashboard.
 export async function listAccountDrafts(accountId, { requestBaseUrl }) {
   const result = await pool.query(
     `
@@ -19,6 +19,7 @@ export async function listAccountDrafts(accountId, { requestBaseUrl }) {
         d.created_at,
         d.updated_at,
         d.disabled_at,
+        d.favorited_at,
         cv.version_number AS latest_version_number,
         cv.created_at AS latest_version_at,
         COALESCE(vc.version_count, 0) AS version_count
@@ -31,7 +32,7 @@ export async function listAccountDrafts(accountId, { requestBaseUrl }) {
       ) vc ON vc.draft_id = d.id
       WHERE d.account_id = $1
         AND d.deleted_at IS NULL
-      ORDER BY d.updated_at DESC
+      ORDER BY d.favorited_at IS NULL, d.updated_at DESC
     `,
     [accountId]
   );
@@ -51,6 +52,7 @@ export async function listAccountDrafts(accountId, { requestBaseUrl }) {
     updatedAt: row.updated_at,
     latestVersionAt: row.latest_version_at,
     disabled: Boolean(row.disabled_at),
+    favorite: Boolean(row.favorited_at),
     publicUrl: getDraftPublicUrl({
       draftId: row.slug || row.id,
       publicBaseUrl: config.publicBaseUrl,
@@ -62,6 +64,24 @@ export async function listAccountDrafts(accountId, { requestBaseUrl }) {
       requestBaseUrl
     })
   }));
+}
+
+// Adds or removes one of the account's drafts from its favorites. `ref` is a
+// draft ID or custom URL slug. Returns the draft ID, or null when the account
+// has no such draft. Does not touch updated_at: favoriting is not an edit.
+export async function setDraftFavorite(accountId, ref, favorite) {
+  const result = await pool.query(
+    `
+      UPDATE drafts
+      SET favorited_at = $3
+      WHERE (id = $1 OR slug = $1)
+        AND account_id = $2
+        AND deleted_at IS NULL
+      RETURNING id
+    `,
+    [ref, accountId, favorite ? new Date() : null]
+  );
+  return result.rows[0]?.id ?? null;
 }
 
 export async function getAccountDraftWithVersions(accountId, draftId, { requestBaseUrl }) {

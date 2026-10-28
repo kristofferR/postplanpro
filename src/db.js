@@ -145,6 +145,7 @@ export async function initDb() {
     ALTER TABLE draft_versions ADD COLUMN IF NOT EXISTS ci_actor TEXT;
     ALTER TABLE draft_versions ADD COLUMN IF NOT EXISTS page_count INTEGER NOT NULL DEFAULT 1;
     ALTER TABLE drafts ADD COLUMN IF NOT EXISTS slug TEXT;
+    ALTER TABLE drafts ADD COLUMN IF NOT EXISTS favorited_at TIMESTAMPTZ;
     ALTER TABLE accounts ADD COLUMN IF NOT EXISTS flags TEXT[] NOT NULL DEFAULT '{}';
     CREATE UNIQUE INDEX IF NOT EXISTS drafts_slug_idx ON drafts(slug);
   `);

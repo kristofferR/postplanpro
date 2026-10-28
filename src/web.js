@@ -4,7 +4,7 @@ import { newInternalId } from "./ids.js";
 import { clientIp } from "./client-ip.js";
 import { createRateLimiter } from "./rate-limit.js";
 import { randomToken, sha256 } from "./crypto.js";
-import { getAccountDraftWithVersions, listAccountDrafts } from "./drafts.js";
+import { getAccountDraftWithVersions, listAccountDrafts, setDraftFavorite } from "./drafts.js";
 import { getDraftRefFromHost, getHomeUrl, getRequestBaseUrl } from "./public-url.js";
 import { buildAuthorizeUrl, buildPkce, exchangeCode, verifyIdToken } from "./shoo.js";
 import {
@@ -160,6 +160,23 @@ export function registerWebRoutes(app) {
       next(error);
     }
   });
+
+  // Star toggles on the dashboard. POST + SameSite=Lax session cookie keeps
+  // cross-site requests out, like key revocation below.
+  for (const [action, favorite] of [["favorite", true], ["unfavorite", false]]) {
+    app.post(`/dashboard/drafts/:draftId/${action}`, ...web, async (req, res, next) => {
+      try {
+        const session = readSession(req);
+        if (!session) {
+          return res.type("html").send(renderSignIn({ next: "/dashboard" }));
+        }
+        await setDraftFavorite(session.accountId, req.params.draftId, favorite);
+        res.redirect("/dashboard");
+      } catch (error) {
+        next(error);
+      }
+    });
+  }
 
   app.get("/cli/auth", ...web, async (req, res, next) => {
     try {

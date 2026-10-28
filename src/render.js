@@ -35,12 +35,14 @@ function htmlPage({ title, body }) {
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="alternate icon" href="/favicon.png" type="image/png">
   <title>${escapeHtml(title)}</title>
+  <meta name="color-scheme" content="dark">
   <style>
     body {
       margin: 0;
-      background: #f8fafc;
-      color: #111827;
+      background: #000;
+      color: #fff;
       font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
     }
 
     .home {
@@ -53,20 +55,31 @@ function htmlPage({ title, body }) {
       margin: 0 0 12px;
       font-size: 40px;
       line-height: 1.1;
+      letter-spacing: -0.02em;
     }
 
     p {
-      color: #374151;
+      color: #a3a3a3;
       font-size: 17px;
       line-height: 1.6;
+    }
+
+    a {
+      color: #8ab4ff;
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
     }
 
     pre {
       overflow-x: auto;
       padding: 14px;
-      border: 1px solid #d1d5db;
-      background: #ffffff;
+      border: 1px solid #262626;
+      background: #0b0b0b;
       border-radius: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
   </style>
 </head>

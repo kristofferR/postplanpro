@@ -49,8 +49,8 @@ const ALLOWED_LINK_RELS = new Set([
 
 // Event handler content attributes browsers run (HTML, CSS, pointer, touch,
 // and SVG animation events). Other on* attributes, such as one="x", are inert.
-// A handler missing here still cannot run on an anonymous upload: the
-// script-free CSP sets script-src-attr 'none'.
+// A handler missing here still cannot run: a draft with no detected scripts
+// is served with script-src-attr 'none'.
 const EVENT_HANDLER_ATTRS = new Set(
   `abort afterprint animationcancel animationend animationiteration animationstart
   auxclick beforecopy beforecut beforeinput beforematch beforepaste beforeprint
@@ -327,9 +327,9 @@ export function validateHtml(html, options = {}) {
 }
 
 // Validates a whole upload: one page, or a folder of pages that link to each
-// other by relative path. Enforces the caller's limits and capabilities, so
-// /api/uploads and the /api/check preflight always agree.
-export function validateUpload(pages, { maxBytes = Infinity, maxPages = Infinity, inlineScripts = true } = {}) {
+// other by relative path. Enforces the caller's limits, so /api/uploads and
+// the /api/check preflight always agree.
+export function validateUpload(pages, { maxBytes = Infinity, maxPages = Infinity } = {}) {
   const issues = [];
   const results = [];
   const multiPage = Array.isArray(pages) && pages.length > 1;
@@ -340,13 +340,7 @@ export function validateUpload(pages, { maxBytes = Infinity, maxPages = Infinity
   }
 
   if (pages.length > maxPages) {
-    issues.push(
-      maxPages === 1
-        ? uploadIssue("multi-page-needs-sign-in", "Multi-page uploads require an authenticated upload.", {
-            fix: "Run `postplan auth login`, then upload again."
-          })
-        : uploadIssue("too-many-pages", `Upload has ${pages.length} pages; the limit is ${maxPages}.`)
-    );
+    issues.push(uploadIssue("too-many-pages", `Upload has ${pages.length} pages; the limit is ${maxPages}.`));
   }
 
   const seen = new Set();
@@ -376,20 +370,12 @@ export function validateUpload(pages, { maxBytes = Infinity, maxPages = Infinity
   if (totalBytes > maxBytes) {
     issues.push(
       uploadIssue("too-large", sizeMessage(totalBytes, maxBytes), {
-        fix: "Sign in for a larger limit (`postplan auth login`), ask for the large-uploads flag, or split the report into linked pages. Do not drop requested content."
+        fix: "Ask for the large-uploads flag, or split the report into linked pages. Do not drop requested content."
       })
     );
   }
 
   const hasScripts = results.some((page) => page.hasScripts);
-  if (hasScripts && !inlineScripts) {
-    issues.push(
-      uploadIssue("scripts-need-sign-in", "Inline JavaScript requires an authenticated upload.", {
-        fix: "Run `postplan auth login`, then upload again. Keep the requested interactivity."
-      })
-    );
-  }
-
   return uploadResult({ issues, pages: results, totalBytes, hasScripts });
 }
 

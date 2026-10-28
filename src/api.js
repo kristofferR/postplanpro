@@ -16,7 +16,7 @@ import { createRateLimiter } from "./rate-limit.js";
 import { getHtmlObject, putHtmlObject } from "./storage.js";
 import { formatBytes, validateUpload } from "./html-policy.js";
 import { clientIp } from "./client-ip.js";
-import { listAccountDrafts } from "./drafts.js";
+import { listAccountDrafts, setDraftFavorite } from "./drafts.js";
 import { registerWebRoutes } from "./web.js";
 import {
   getDraftPublicUrl,
@@ -53,23 +53,23 @@ export function createApp() {
     windowMs: Number(process.env.UPLOAD_RATE_LIMIT_WINDOW_MS || 60_000),
     max: Number(process.env.UPLOAD_RATE_LIMIT_MAX || 30),
     keyPrefix: "upload-key",
-    key: (req) => req.auth?.id || clientIp(req) || "anonymous"
+    key: (req) => req.auth.id
   });
 
   app.use(noStoreHeaders);
 
   // Registered before the shared /api JSON parser: upload bodies are parsed
-  // after auth, with a limit sized to the caller's HTML budget, so anonymous
-  // requests cannot send the largest bodies.
+  // after auth, with a limit sized to the caller's HTML budget, so requests
+  // without a key are rejected before their body is read.
   app.post(
     "/api/uploads",
     uploadIpRateLimit,
-    optionalUploadAuth,
+    requireUploadAuth,
     uploadKeyRateLimit,
     uploadJson,
     handleUpload
   );
-  app.post("/api/check", uploadIpRateLimit, optionalUploadAuth, uploadJson, handleCheck);
+  app.post("/api/check", uploadIpRateLimit, requireUploadAuth, uploadJson, handleCheck);
 
   // Scoped to /api so that draft GETs carrying a stray JSON body (some HTTP
   // clients always send Content-Type: application/json) can never fail with a
@@ -224,6 +224,63 @@ export function createApp() {
       }
 
       res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Favorites sort to the top of the dashboard and `postplan list`. `:ref` is
+  // a draft ID or custom URL slug; only the owner can favorite a draft.
+  app.post("/api/drafts/:ref/favorite", requireAuth, async (req, res, next) => {
+    try {
+      const favorite = req.body?.favorite;
+      if (typeof favorite !== "boolean") {
+        return res.status(400).json({ ok: false, error: "favorite must be true or false." });
+      }
+      const draftId = await setDraftFavorite(req.auth.account_id, req.params.ref.toLowerCase(), favorite);
+      if (!draftId) {
+        return res.status(404).json({ ok: false, error: "Draft not found on your account." });
+      }
+      res.json({ ok: true, draftId, favorite });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Every page of a draft's current version, for `postplan download`. Drafts
+  // are public, so no key is needed; a key tells whether the caller owns the
+  // draft and so can upload edits back to it.
+  app.get("/api/drafts/:ref/source", async (req, res, next) => {
+    try {
+      const auth = await optionalAuth(req);
+      const { draft, version } = await findPublicDraftVersion(req.params.ref.toLowerCase());
+      if (!draft || !version) {
+        return res.status(404).json({ ok: false, error: "Draft not found." });
+      }
+      const otherPages =
+        Number(version.page_count || 1) > 1
+          ? (
+              await pool.query(
+                "SELECT path, object_key FROM draft_pages WHERE draft_version_id = $1 ORDER BY path",
+                [version.id]
+              )
+            ).rows
+          : [];
+      const pages = await Promise.all(
+        [{ path: "index.html", object_key: version.object_key }, ...otherPages].map(async (page) => ({
+          path: page.path,
+          html: await getHtmlObject(page.object_key)
+        }))
+      );
+      res.json({
+        ok: true,
+        draftId: draft.id,
+        slug: draft.slug ?? null,
+        title: draft.title,
+        versionNumber: Number(version.version_number),
+        owned: draft.account_id === auth?.account_id,
+        pages
+      });
     } catch (error) {
       next(error);
     }
@@ -414,9 +471,7 @@ async function handleUpload(req, res, next) {
       requestId,
       contentHash: validation.contentHash,
       totalBytes: validation.totalBytes,
-      account: capabilities.signedIn
-        ? { id: req.auth.account_id, name: req.auth.account_name }
-        : null,
+      account: { id: req.auth.account_id, name: req.auth.account_name },
       publicUrl,
       rawUrl: getDraftRawUrl(urlOptions),
       // Built from the draft ID, which never moves: a slug can be renamed
@@ -569,13 +624,12 @@ async function handleCheck(req, res, next) {
     const capabilities = uploadCapabilities(req);
     const report = {
       ok: true,
-      account: capabilities.signedIn
-        ? { id: req.auth.account_id, name: req.auth.account_name, apiKeyName: req.auth.name }
-        : null,
+      account: { id: req.auth.account_id, name: req.auth.account_name, apiKeyName: req.auth.name },
       flags: capabilities.flags,
       limits: { maxBytes: capabilities.maxBytes, maxPages: capabilities.maxPages },
       capabilities: {
-        inlineScripts: capabilities.inlineScripts,
+        // Always true now; kept for older CLIs that print it.
+        inlineScripts: true,
         multiPage: capabilities.maxPages > 1,
         customUrls: capabilities.customUrls,
         externalAssets: "https images, video, audio, fonts, and stylesheets",
@@ -617,19 +671,12 @@ async function handleCheck(req, res, next) {
 // What this request may publish. Shared by uploads and /api/check so a
 // passing check means the upload passes too.
 function uploadCapabilities(req) {
-  const signedIn = req.isAuthenticatedUpload;
-  const flags = signedIn ? req.auth.flags || [] : [];
+  const flags = req.auth.flags || [];
   const { limits } = config;
-  let maxBytes = limits.anonymousBytes;
-  if (signedIn) {
-    maxBytes = flags.includes(FLAGS.largeUploads) ? limits.largeBytes : limits.accountBytes;
-  }
   return {
-    signedIn,
     flags,
-    maxBytes,
-    maxPages: signedIn ? limits.maxPages : 1,
-    inlineScripts: signedIn,
+    maxBytes: flags.includes(FLAGS.largeUploads) ? limits.largeBytes : limits.accountBytes,
+    maxPages: limits.maxPages,
     customUrls: flags.includes(FLAGS.customUrls)
   };
 }
@@ -912,19 +959,17 @@ async function requireAuth(req, res, next) {
   next();
 }
 
-// Uploads work without a key, but a key that is presented and rejected fails
-// loudly: silently publishing anonymously would drop ownership and scripts.
-async function optionalUploadAuth(req, res, next) {
-  const presented = Boolean(req.get("authorization"));
+// Uploads and /api/check need an account API key. The error tells the CLI
+// user how to get one.
+async function requireUploadAuth(req, res, next) {
   const auth = await optionalAuth(req);
-  if (presented && !auth) {
-    return res.status(401).json({
-      ok: false,
-      error: "API key was rejected. Run `postplan auth login` for a new key."
-    });
+  if (!auth) {
+    const error = req.get("authorization")
+      ? "API key was rejected. Run `postplan auth login` for a new key."
+      : "Uploads need an account. Run `postplan auth login`, then try again.";
+    return res.status(401).json({ ok: false, error });
   }
-  req.isAuthenticatedUpload = Boolean(auth);
-  req.auth = auth || publicUploadAuth;
+  req.auth = auth;
   next();
 }
 

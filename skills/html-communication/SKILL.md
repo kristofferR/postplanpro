@@ -20,9 +20,9 @@ failure: try another runner, and report it as a runner problem.
 
 1. **Check readiness.** Before you build a page that is large, interactive,
    multi-page, or needs a custom URL, run `postplan check --json`. It reports
-   the account, the upload limit, and what is allowed (`capabilities`). If the
-   page needs JavaScript and `capabilities.inlineScripts` is false, ask the
-   user to run `postplan auth login` now, before you build it.
+   the account, the upload limit, and what is allowed (`capabilities`).
+   Uploads need an account. If the check fails with a sign-in error, ask the
+   user to run `postplan auth login` now, before you build the page.
 2. **Write the page** by the rules below.
 3. **Check the file**: `postplan check <path>`. Fix every error at the line it
    names. Treat each warning as a feature that will break for the reader.
@@ -74,6 +74,11 @@ To move an existing page to a custom URL, add `--draft <draft-id>`. Custom URLs
 need the `custom-urls` flag (`check` shows `customUrls`);
 `postplan check --slug <name>` shows whether a name is free. Use `--new`
 (without `--draft` or `--slug`) only when the user wants a separate page.
+
+To edit a published page you do not have locally, run
+`postplan download <url> --json`. It writes a new file and prints the
+`uploadCommand` that publishes your edits. For a draft on your account, that
+command updates the same page.
 
 ## Document style (user preference)
 

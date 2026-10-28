@@ -4,9 +4,10 @@ Postplan is a small service and CLI for publishing static HTML drafts from agent
 
 ## CLI
 
-Upload a draft:
+Sign in once, then upload a draft. Uploads need an account API key:
 
 ```sh
+npx postplan auth login
 npx postplan upload ./plan.html
 ```
 
@@ -16,10 +17,9 @@ Attach an optional stable description (a short label shown in your dashboard and
 npx postplan upload ./plan.html --description "Q3 warehouse migration plan"
 ```
 
-Upload a folder of linked pages (it needs an `index.html`; pages link to each other with relative paths such as `href="details.html"`). Folder uploads need sign-in:
+Upload a folder of linked pages (it needs an `index.html`; pages link to each other with relative paths such as `href="details.html"`):
 
 ```sh
-npx postplan auth login
 npx postplan upload ./report/
 ```
 
@@ -43,7 +43,7 @@ If the API cannot be reached, `check` falls back to the bundled markup validator
 
 The CLI defaults to `https://postplan.dev`. Use `--api-url http://localhost:3000` for a local or custom deployment.
 
-API keys are optional for private/admin flows. Log in interactively (opens a browser page that mints a key you paste back — works over SSH, no localhost redirect):
+Log in interactively (opens a browser page that mints a key you paste back — works over SSH, no localhost redirect):
 
 ```sh
 npx postplan auth login
@@ -59,6 +59,19 @@ List the drafts published to your account (requires an API key). Each row shows 
 
 ```sh
 npx postplan list
+```
+
+Favorite a draft to pin it to the top of the dashboard and `postplan list`. It takes a draft ID, custom URL name, or draft URL. You can also use the star on each dashboard row:
+
+```sh
+npx postplan favorite q3-plan
+npx postplan unfavorite q3-plan
+```
+
+Download a draft to edit it. Download never overwrites a file: it writes `<name>-v<version>.html` (a folder for multi-page drafts) and adds `-2`, `-3`, ... if that name is taken. If the draft is on your account, the download is mapped to it, so `postplan upload <file>` updates the same draft. Anyone else's draft uploads as a new draft:
+
+```sh
+npx postplan download https://q3-plan.postplan.dev
 ```
 
 The CLI stores optional credentials and draft mappings in `~/.postplan`. A mapping ties an absolute file path and API URL to a draft, so re-uploading the same path updates the same draft. Each mapping is its own file under `~/.postplan/drafts/`, so concurrent uploads cannot overwrite each other's; mappings saved by older CLIs in `~/.postplan/drafts.json` are still read. A corrupt state file is moved aside, not silently reset.
@@ -80,18 +93,17 @@ Optional service variables:
 - `POSTPLAN_PUBLIC_BASE_URL` - set to a normal base URL for `/d/<draft-id>` URLs, or a wildcard URL such as `https://*.postplan.dev` for draft subdomains.
 - `POSTPLAN_SESSION_SECRET` - together with `POSTPLAN_PUBLIC_BASE_URL`, enables web sign-in (the dashboard and `/cli/auth`). If either is absent, those routes return 503 and uploads/serving are unaffected.
 - `SHOO_BASE_URL` - identity broker for web sign-in (default `https://shoo.dev`).
-- `MAX_HTML_BYTES` - anonymous upload limit (default 512 KiB).
-- `MAX_ACCOUNT_HTML_BYTES` - signed-in upload limit (default 4 MiB).
+- `MAX_ACCOUNT_HTML_BYTES` - upload limit (default 4 MiB).
 - `MAX_LARGE_HTML_BYTES` - limit for accounts with the `large-uploads` flag (default 16 MiB).
-- `MAX_PAGES_PER_UPLOAD` - pages per signed-in folder upload (default 50).
+- `MAX_PAGES_PER_UPLOAD` - pages per folder upload (default 50).
 - `UPLOAD_IP_RATE_LIMIT_WINDOW_MS`
 - `UPLOAD_IP_RATE_LIMIT_MAX`
 - `UPLOAD_RATE_LIMIT_WINDOW_MS`
 - `UPLOAD_RATE_LIMIT_MAX`
 
-Uploads are public by default. Bearer API keys are still used for admin endpoints and authenticated ownership flows. An upload that presents a key the server rejects fails with 401 instead of falling back to an anonymous upload. The bootstrap key is inserted into Postgres on startup if present.
+Uploads and `/api/check` need a Bearer API key. A request with no key, or a key the server rejects, fails with 401. Published drafts stay public. The bootstrap key is inserted into Postgres on startup if present.
 
-Size limits apply to the HTML of one upload (all pages combined) and depend on who uploads: anonymous, signed-in, or signed-in with the `large-uploads` flag.
+Size limits apply to the HTML of one upload (all pages combined). Accounts with the `large-uploads` flag get a larger limit.
 
 ## Account flags
 
@@ -115,13 +127,11 @@ With `POSTPLAN_SESSION_SECRET` set, `/dashboard` lists the signed-in account's d
 
 Sign-in requests shoo's `pii` consent, so each user approves sharing their email, name, and profile picture once. Those claims are stored on `identities` and overwritten from the token at every login — removing your picture or email at Google clears it here too (only the stable `pii_subject` identifier is retained across logins). The header shows the avatar and email. To find the email behind an upload, join `draft_versions.created_by_api_key_id → api_keys.account_id → identities.email` — nothing is denormalized onto version rows. Declining consent denies the sign-in.
 
-An uploaded draft is attributed to whichever account's API key published it (anonymous uploads still work and stay public, but are not attributed to any account). `GET /api/drafts` returns the authenticated account's drafts — newest first, with each draft's description, auto-linked git repo, latest version number, and total version count — which is what `postplan list` and the dashboard read.
+An uploaded draft is attributed to whichever account's API key published it (drafts from the old anonymous uploads stay public, but are not attributed to any account). `GET /api/drafts` returns the authenticated account's drafts — favorites first, then newest first, with each draft's description, auto-linked git repo, latest version number, and total version count — which is what `postplan list` and the dashboard read.
 
 Each uploaded version also records provenance and audit metadata: the client IP (from Railway's `X-Real-IP`), the Railway request id (`X-Railway-Request-Id`, for correlating with network logs), git branch/commit/subject and whether the working tree was dirty, CI run URL and actor when published from CI, and content signals derived at upload time (whether the HTML contains inline script, and which external hosts its images load from). Git and CI values are self-reported by the client and are used for display and audit only — never for authorization.
 
-Authenticated uploads may contain inline JavaScript: classic or `type="module"` `<script>` blocks and inline event-handler attributes such as `onclick`. Anonymous uploads containing JavaScript are rejected. Data blocks such as `<script type="application/json">` never run, so they are allowed in any upload. External script sources, JavaScript URLs, forms, iframes/embeds, and meta-refresh redirects are rejected at upload time. `<link>` is allowed for https stylesheets, icons, and preconnects.
-
-Run `postplan auth login` before uploading a scripted draft so the CLI sends an account API key.
+Uploads may contain inline JavaScript: classic or `type="module"` `<script>` blocks and inline event-handler attributes such as `onclick`. Data blocks such as `<script type="application/json">` never run, so they are allowed in any upload. External script sources, JavaScript URLs, forms, iframes/embeds, and meta-refresh redirects are rejected at upload time. `<link>` is allowed for https stylesheets, icons, and preconnects.
 
 ## Serving
 

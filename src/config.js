@@ -3,10 +3,9 @@ export const config = {
   databaseUrl: process.env.DATABASE_URL,
   bootstrapApiKey: process.env.POSTPLAN_BOOTSTRAP_API_KEY,
   publicBaseUrl: process.env.POSTPLAN_PUBLIC_BASE_URL,
-  // HTML budget per upload (all pages combined), by who is uploading.
-  // Accounts get the large limit through the "large-uploads" flag.
+  // HTML budget per upload (all pages combined). Accounts get the large
+  // limit through the "large-uploads" flag.
   limits: {
-    anonymousBytes: Number(process.env.MAX_HTML_BYTES || 512 * 1024),
     accountBytes: Number(process.env.MAX_ACCOUNT_HTML_BYTES || 4 * 1024 * 1024),
     largeBytes: Number(process.env.MAX_LARGE_HTML_BYTES || 16 * 1024 * 1024),
     maxPages: Number(process.env.MAX_PAGES_PER_UPLOAD || 50)
